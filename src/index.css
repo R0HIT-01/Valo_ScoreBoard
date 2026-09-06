@@ -1,0 +1,134 @@
+/* Tactical Valorant Esports Analytics Design System */
+:root {
+  --bg-core: #090C10;
+  --bg-surface: #0E131B;
+  --bg-card: #141B24;
+  --bg-card-hover: #1A232F;
+  --bg-input: #0A0E14;
+
+  --border-subtle: #1C2634;
+  --border-medium: #273549;
+  --border-focus: #3B82F6;
+
+  --val-red: #FF4655;
+  --val-red-dim: #BD3944;
+  --val-red-glow: rgba(255, 70, 85, 0.25);
+  --val-red-bg: rgba(255, 70, 85, 0.08);
+
+  --val-teal: #00F5D4;
+  --val-teal-dim: #009B8D;
+  --val-teal-glow: rgba(0, 245, 212, 0.25);
+  --val-teal-bg: rgba(0, 245, 212, 0.08);
+
+  --val-gold: #FFB800;
+  --val-green: #34D399;
+
+  --text-primary: #F4F4F6;
+  --text-secondary: #94A3B8;
+  --text-muted: #64748B;
+
+  --font-primary: 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-heading: 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-body: 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'Roboto', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--bg-core);
+  color: var(--text-primary);
+  font-family: var(--font-body);
+  font-weight: 400;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-core);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-medium);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+/* Tabular Numbers for precise numeric alignment */
+.tabular-nums {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Animations */
+@keyframes pulseGlow {
+
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+
+  50% {
+    opacity: 0.6;
+    transform: scale(0.95);
+  }
+}
+
+@keyframes scanline {
+  0% {
+    transform: translateY(-100%);
+  }
+
+  100% {
+    transform: translateY(1000%);
+  }
+}
+
+@keyframes tacticalRadar {
+  0% {
+    transform: rotate(0deg);
+  }
+
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.radar-spinner {
+  animation: tacticalRadar 2s linear infinite;
+}
+
+.pulsing-indicator {
+  animation: pulseGlow 2s ease-in-out infinite;
+}
+
+/* Focus styles */
+input:focus,
+select:focus,
+button:focus-visible {
+  outline: none;
+}

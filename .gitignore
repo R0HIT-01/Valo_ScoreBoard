@@ -1,0 +1,68 @@
+# Environment variables - NEVER commit secrets
+.env
+.env.*
+!.env.example
+
+# Dependencies
+node_modules/
+yarn.lock
+pnpm-lock.yaml
+
+# Database
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# Python Caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Temporary OCR & analysis artifacts
+annotated/
+row_crops/
+debug/
+scratch/
+tmp/
+temp/
+*.tmp
+
+# Build outputs
+dist/
+build/
+.next/
+
+# Agent skills & caches
+.agents/
+skills-lock.json
+
+# Markdown & Documentation exclusion (Final commit requirement: ZERO markdown files)
+*.md
+*.markdown
+**/*.md
+**/*.markdown
+START_HERE.txt
+
+# Testing & Coverage
+coverage/
+.nyc_output/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# IDE & Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
