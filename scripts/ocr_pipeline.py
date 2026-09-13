@@ -473,26 +473,37 @@ def ocr_fb(row_crop, debug_dir=None, label=""):
     return raw.strip()
 
 def ocr_defuses(row_crop, debug_dir=None, label=""):
-    """OCR for Defuses — rightmost column, very small digit.
-    Uses upscale=5 (higher than other fields) because the digit is only ~3-4px wide.
-    PSM 6 handles sparse single-character cells better than PSM 7.
+    """OCR for Defuses — rightmost column, single digit.
+    Digit '1' is thin (~3px wide). Uses 5x resize with LANCZOS4,
+    BINARY_INV thresholding (105) + white border padding with PSM 10,
+    which reliably captures thin strokes without CLAHE distortion.
     """
     col = crop_column(row_crop, "defuses")
-    # Custom preprocessing with higher upscale
     gray = cv2.cvtColor(col, cv2.COLOR_BGR2GRAY)
     gh, gw = gray.shape
     if gh < 3 or gw < 3:
         return ""
     gray_up = cv2.resize(gray, (gw * 5, gh * 5), interpolation=cv2.INTER_LANCZOS4)
-    clahe = cv2.createCLAHE(clipLimit=5.0, tileGridSize=(2, 2))
-    gray_up = clahe.apply(gray_up)
-    _, binary = cv2.threshold(gray_up, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    binary = cv2.medianBlur(binary, 3)
+
+    # Inverted binary threshold with white border padding
+    _, binary_inv = cv2.threshold(gray_up, 105, 255, cv2.THRESH_BINARY_INV)
+    padded = cv2.copyMakeBorder(binary_inv, 15, 15, 15, 15, cv2.BORDER_CONSTANT, value=255)
+
     if debug_dir and label:
         save_debug(col, f"row_crops/{label}_defuses_raw.png", debug_dir)
-        save_debug(binary, f"row_crops/{label}_defuses_proc.png", debug_dir)
-    raw = run_tess(binary, psm=6, whitelist=NUM_WHITELIST)
-    return raw.strip()
+        save_debug(padded, f"row_crops/{label}_defuses_proc.png", debug_dir)
+
+    raw = run_tess(padded, psm=10, whitelist=NUM_WHITELIST)
+    result = raw.strip()
+
+    # Fallback to PSM 6 if PSM 10 produced no digits
+    if not result or not re.sub(r"[^\d]", "", result):
+        raw_fallback = run_tess(padded, psm=6, whitelist=NUM_WHITELIST)
+        result_fallback = raw_fallback.strip()
+        if result_fallback and re.sub(r"[^\d]", "", result_fallback):
+            result = result_fallback
+
+    return result
 
 def ocr_kda(row_crop, debug_dir=None, label=""):
     col = crop_column(row_crop, "kda")

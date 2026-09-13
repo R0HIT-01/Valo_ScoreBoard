@@ -32,11 +32,11 @@ async function startup() {
     // Verify Google Sheets API is configured (optional)
     if (googleSheetsService.isConfigured()) {
       try {
-        googleSheetsService.initialize();
+        await googleSheetsService.initialize();
         console.log("✓ Google Sheets API client initialized");
       } catch (err) {
-        console.warn("⚠ Google Sheets API not configured:", err.message);
-        console.warn("  You can still analyze images, but cannot push to Sheets yet.");
+        console.warn("⚠ Google Sheets initialization warning:", err.message);
+        console.warn("  Server will continue. You can still analyze images and push matches.");
       }
     } else {
       console.warn("⚠ Google Sheets not configured (optional)");

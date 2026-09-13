@@ -32,12 +32,23 @@ export class GoogleSheetsService {
         body: JSON.stringify(payload),
       });
 
+      const contentType = response.headers.get("content-type") || "";
       const text = await response.text();
       let data;
       try {
         data = JSON.parse(text);
       } catch (e) {
-        throw new Error(`Invalid JSON response from Apps Script: ${text.slice(0, 200)}`);
+        const isHtml = text.trim().startsWith("<") || contentType.includes("text/html");
+        if (isHtml) {
+          throw new Error(
+            `Apps Script returned HTML (HTTP ${response.status}, Content-Type: ${contentType || "unknown"}). ` +
+            `This usually indicates an Apps Script Web App configuration issue ` +
+            `(e.g., deployment 'Who has access' must be set to 'Anyone', or the URL is a /dev URL instead of /exec, or the Apps Script runtime threw an unhandled error).`
+          );
+        }
+        throw new Error(
+          `Apps Script returned non-JSON response (HTTP ${response.status}, Content-Type: ${contentType || "unknown"}).`
+        );
       }
 
       return data;

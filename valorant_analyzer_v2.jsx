@@ -1554,6 +1554,7 @@ export default function ValorantAnalyzerV2() {
   const [showPreview, setShowPreview] = useState(false);
   const [pushing, setPushing] = useState(false);
   const [success, setSuccess] = useState(false);
+  const [submittedMatchId, setSubmittedMatchId] = useState(null);
 
   // Fetch initial data
   const fetchMatchId = async () => {
@@ -1717,6 +1718,7 @@ export default function ValorantAnalyzerV2() {
         throw new Error(data?.error || "Failed to submit match to Google Sheets.");
       }
 
+      setSubmittedMatchId(matchId);
       setSuccess(true);
       fetchMatchId();
     } catch (err) {
@@ -1738,6 +1740,7 @@ export default function ValorantAnalyzerV2() {
     setTeamBName("");
     setShowPreview(false);
     setSuccess(false);
+    setSubmittedMatchId(null);
     fetchMatchId();
   };
 
@@ -1890,7 +1893,7 @@ export default function ValorantAnalyzerV2() {
         {/* STEP 5: Success State */}
         {success && (
           <SuccessScreen
-            matchId={matchId}
+            matchId={submittedMatchId || matchId}
             teamAName={teamAName}
             teamBName={teamBName}
             onNewMatch={handleReset}

@@ -366,46 +366,58 @@ function writeMatchBlock(sheet, matchId, date, teamName, opponentName, players, 
     cell.setHorizontalAlignment("center");
   }
 
-  // 4. Pre-format K/D/A column (Col 4) explicitly as TEXT ('@') BEFORE writing player data.
-  // This permanently prevents Google Sheets from auto-interpreting strings like "11/19/8" as dates (e.g. 11/19/2008).
-  const kdaCol = 4;
-  const playerStartRow = colHeaderRow + 1;
-  const kdaRange = sheet.getRange(playerStartRow, kdaCol, players.length, 1);
-  kdaRange.setNumberFormat("@");
-  kdaRange.setHorizontalAlignment("center");
+  // 4. Build the full 2D values array for all player rows.
+  //    Columns: [1:PLAYER, 2:AGENT, 3:ACS, 4:K/D/A, 5:ECON, 6:FB, 7:PLT, 8:DEF]
+  var playerStartRow = colHeaderRow + 1;
+  var allPlayerRows = [];
+  players.forEach(function (player) {
+    // Guarantee literal text for K/D/A in Google Sheets by prepending a leading apostrophe (').
+    // Google Sheets interprets the apostrophe as an explicit text prefix: it stores and displays
+    // the literal string (e.g. '10/17/8 -> 10/17/8) without rendering the apostrophe to the user,
+    // and completely prevents auto-coercion to date serials (e.g. 10/17/2008).
+    var rawKda = String(player.kda || "").trim();
+    var literalKda = rawKda.charAt(0) === "'" ? rawKda : "'" + rawKda;
 
-  // 5. Player Rows
-  players.forEach(function (player, idx) {
-    const r = colHeaderRow + 1 + idx;
-    const rowValues = [
+    allPlayerRows.push([
       String(player.name || ""),
       String(player.agent || ""),
       Number(player.acs),
-      String(player.kda || "").trim(),
+      literalKda,
       Number(player.econ),
       Number(player.firstBloods),
       Number(player.plants),
       Number(player.defuses),
-    ];
+    ]);
+  });
 
-    for (let c = 0; c < rowValues.length; c++) {
-      const cell = sheet.getRange(r, c + 1);
-      if (c === 3) {
-        cell.setNumberFormat("@"); // Explicit cell-level TEXT format guarantee
-      }
-      cell.setValue(rowValues[c]);
-      if (c >= 2) {
-        cell.setHorizontalAlignment("center");
-      }
-    }
+  // 5. Pre-format K/D/A column (Col 4) as plain TEXT ('@') BEFORE writing any values.
+  var kdaCol = 4;
+  var kdaRange = sheet.getRange(playerStartRow, kdaCol, players.length, 1);
+  kdaRange.setNumberFormat("@");
 
-    // Zebra striping
+  // 6. Write all player rows in a single batch setValues() call.
+  var playerRange = sheet.getRange(playerStartRow, 1, players.length, 8);
+  playerRange.setValues(allPlayerRows);
+
+  // 7. Apply column-level formatting AFTER values are written.
+  kdaRange.setNumberFormat("@");
+  kdaRange.setHorizontalAlignment("center");
+
+  // Center-align numeric stat columns (ACS=3, ECON=5, FB=6, PLT=7, DEF=8)
+  sheet.getRange(playerStartRow, 3, players.length, 1).setHorizontalAlignment("center"); // ACS
+  sheet.getRange(playerStartRow, 5, players.length, 1).setHorizontalAlignment("center"); // ECON
+  sheet.getRange(playerStartRow, 6, players.length, 1).setHorizontalAlignment("center"); // FB
+  sheet.getRange(playerStartRow, 7, players.length, 1).setHorizontalAlignment("center"); // PLT
+  sheet.getRange(playerStartRow, 8, players.length, 1).setHorizontalAlignment("center"); // DEF
+
+  // Zebra striping for alternating rows
+  players.forEach(function (player, idx) {
     if (idx % 2 === 1) {
-      sheet.getRange(r, 1, 1, 8).setBackground("#F9FAFB");
+      sheet.getRange(playerStartRow + idx, 1, 1, 8).setBackground("#F9FAFB");
     }
   });
 
-  // 5. Borders around match block table
-  const tableRange = sheet.getRange(colHeaderRow, 1, 6, 8);
+  // 8. Borders around match block table (header row + player rows)
+  var tableRange = sheet.getRange(colHeaderRow, 1, 1 + players.length, 8);
   tableRange.setBorder(true, true, true, true, true, true, "#E5E7EB", SpreadsheetApp.BorderStyle.SOLID);
 }
