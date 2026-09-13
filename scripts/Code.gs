@@ -366,14 +366,22 @@ function writeMatchBlock(sheet, matchId, date, teamName, opponentName, players, 
     cell.setHorizontalAlignment("center");
   }
 
-  // 4. Player Rows
+  // 4. Pre-format K/D/A column (Col 4) explicitly as TEXT ('@') BEFORE writing player data.
+  // This permanently prevents Google Sheets from auto-interpreting strings like "11/19/8" as dates (e.g. 11/19/2008).
+  const kdaCol = 4;
+  const playerStartRow = colHeaderRow + 1;
+  const kdaRange = sheet.getRange(playerStartRow, kdaCol, players.length, 1);
+  kdaRange.setNumberFormat("@");
+  kdaRange.setHorizontalAlignment("center");
+
+  // 5. Player Rows
   players.forEach(function (player, idx) {
     const r = colHeaderRow + 1 + idx;
     const rowValues = [
-      player.name,
-      player.agent,
+      String(player.name || ""),
+      String(player.agent || ""),
       Number(player.acs),
-      player.kda,
+      String(player.kda || "").trim(),
       Number(player.econ),
       Number(player.firstBloods),
       Number(player.plants),
@@ -382,8 +390,11 @@ function writeMatchBlock(sheet, matchId, date, teamName, opponentName, players, 
 
     for (let c = 0; c < rowValues.length; c++) {
       const cell = sheet.getRange(r, c + 1);
+      if (c === 3) {
+        cell.setNumberFormat("@"); // Explicit cell-level TEXT format guarantee
+      }
       cell.setValue(rowValues[c]);
-      if (c >= 2 && c !== 3) {
+      if (c >= 2) {
         cell.setHorizontalAlignment("center");
       }
     }

@@ -766,7 +766,15 @@ function TeamScoreboard({ team, teamLabel, detectedColor, onChange, onFocusField
                           value={val}
                           placeholder={missing ? "[ — ]" : ""}
                           onChange={(e) => onChange(rowIndex, f.key, e.target.value)}
-                          onFocus={() => onFocusField && onFocusField(rowIndex, f.key)}
+                          onFocus={(e) => {
+                            if (onFocusField) onFocusField(rowIndex, f.key);
+                            e.target.style.borderColor = accentColor;
+                            e.target.style.boxShadow = `0 0 8px ${glow}`;
+                          }}
+                          onBlur={(e) => {
+                            e.target.style.borderColor = hasError ? "rgba(255, 70, 85, 0.5)" : "var(--border-subtle)";
+                            e.target.style.boxShadow = "none";
+                          }}
                           style={{
                             width: "100%",
                             boxSizing: "border-box",
@@ -782,14 +790,6 @@ function TeamScoreboard({ team, teamLabel, detectedColor, onChange, onFocusField
                             textAlign: f.align,
                             outline: "none",
                             transition: "border-color 0.15s ease",
-                          }}
-                          onFocus={(e) => {
-                            e.target.style.borderColor = accentColor;
-                            e.target.style.boxShadow = `0 0 8px ${glow}`;
-                          }}
-                          onBlur={(e) => {
-                            e.target.style.borderColor = hasError ? "rgba(255, 70, 85, 0.5)" : "var(--border-subtle)";
-                            e.target.style.boxShadow = "none";
                           }}
                         />
                       </td>

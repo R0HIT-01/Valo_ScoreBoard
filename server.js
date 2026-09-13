@@ -3,7 +3,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import { analyzeScoreboard } from "./services/visionService.js";
 import { googleSheetsService } from "./services/sheetsService.js";
-import { initializeDatabase, getNextMatchId, reserveMatchId, recordMatch, getMatchById } from "./db/database.js";
+import { initializeDatabase, getNextMatchId, reserveMatchId, recordMatch, getMatchById, clearMatches } from "./db/database.js";
 import { validateMatchData, sanitizeMatchData } from "./utils/validation.js";
 
 dotenv.config();
@@ -248,6 +248,25 @@ app.get("/api/matches", async (req, res) => {
   }
 });
 
+/**
+ * Reset matches history and reset counter to start from M001
+ * POST /api/reset-matches
+ */
+app.post("/api/reset-matches", async (req, res) => {
+  try {
+    await clearMatches(db);
+    const nextMatchId = await getNextMatchId(db);
+    res.json({
+      ok: true,
+      message: "Match history cleared and counter reset to start from M001",
+      nextMatchId,
+    });
+  } catch (error) {
+    console.error("[RESET-MATCHES] Error:", error.message);
+    res.status(500).json({ error: "Failed to reset matches" });
+  }
+});
+
 // ============================================
 // ERROR HANDLING
 // ============================================
@@ -282,6 +301,7 @@ startup().then(() => {
     console.log(`  POST /api/push-match`);
     console.log(`  GET  /api/next-match-id`);
     console.log(`  GET  /api/matches`);
+    console.log(`  POST /api/reset-matches`);
     console.log();
   });
 });

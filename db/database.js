@@ -103,3 +103,15 @@ export async function getAllMatches(db) {
   return await db.all("SELECT * FROM matches ORDER BY created_at DESC");
 }
 
+export async function clearMatches(db) {
+  await db.run("DELETE FROM matches");
+  try {
+    await db.run("DELETE FROM sqlite_sequence WHERE name = 'matches'");
+  } catch (e) {
+    // sqlite_sequence table may not exist if autoincrement hasn't been used yet
+  }
+  await db.run("UPDATE match_counter SET counter = 0, last_updated = CURRENT_TIMESTAMP WHERE id = 1");
+}
+
+export const resetMatches = clearMatches;
+

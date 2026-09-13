@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { validateMatchData, sanitizeMatchData } from "../utils/validation.js";
-import { initializeDatabase, getNextMatchId, getMatchById, recordMatch } from "../db/database.js";
+import { initializeDatabase, getNextMatchId, getMatchById, recordMatch, clearMatches } from "../db/database.js";
 
 const createValidPlayers = (prefix = "Player") => [
   { name: `${prefix} 1`, agent: "Jett", acs: 250, kda: "24/12/5", econ: 8500, firstBloods: 3, plants: 2, defuses: 1 },
@@ -114,6 +114,40 @@ test("Match ID Rule G & H — Successful submission commits user ID to SQLite an
     // Counter should advance past 25 to M026
     const nextAfter25 = await getNextMatchId(db);
     assert.equal(nextAfter25, "M026");
+
+    await db.close();
+  } finally {
+    if (fs.existsSync(tempDbPath)) fs.unlinkSync(tempDbPath);
+  }
+});
+
+test("Match ID Rule I — clearMatches wipes all match data and resets next ID to M001", async () => {
+  const tempDbPath = path.join(process.cwd(), "data", `test_match_id_clear_${Date.now()}.db`);
+  try {
+    const db = await initializeDatabase(tempDbPath);
+
+    // Seed several matches
+    await recordMatch(db, createMatch("M001"));
+    await recordMatch(db, createMatch("M002"));
+    await recordMatch(db, createMatch("M003"));
+    assert.equal(await getNextMatchId(db), "M004");
+
+    // Clear matches
+    await clearMatches(db);
+
+    // Verify matches table is empty
+    const allMatches = await db.all("SELECT * FROM matches");
+    assert.equal(allMatches.length, 0);
+
+    // Verify counter is reset and next match starts from M001
+    const nextId = await getNextMatchId(db);
+    assert.equal(nextId, "M001");
+
+    // Verify new match can be recorded starting at M001
+    await recordMatch(db, createMatch("M001"));
+    const stored = await getMatchById(db, "M001");
+    assert.ok(stored);
+    assert.equal(await getNextMatchId(db), "M002");
 
     await db.close();
   } finally {
