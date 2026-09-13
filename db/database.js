@@ -36,6 +36,8 @@ export async function initializeDatabase(dbPath = "./data/matches.db") {
       match_id TEXT UNIQUE NOT NULL,
       team_a_name TEXT NOT NULL,
       team_b_name TEXT NOT NULL,
+      team_a_score INTEGER,
+      team_b_score INTEGER,
       match_date DATE NOT NULL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       pushed_at DATETIME,
@@ -47,6 +49,14 @@ export async function initializeDatabase(dbPath = "./data/matches.db") {
     -- Ensure counter exists
     INSERT OR IGNORE INTO match_counter (id, counter) VALUES (1, 0);
   `);
+
+  // Safe schema migrations for existing database files
+  try {
+    await db.exec("ALTER TABLE matches ADD COLUMN team_a_score INTEGER");
+  } catch (e) {}
+  try {
+    await db.exec("ALTER TABLE matches ADD COLUMN team_b_score INTEGER");
+  } catch (e) {}
 
   return db;
 }
@@ -69,14 +79,18 @@ export async function recordMatch(db, matchData, status = "COMMITTED_SHEETS") {
   const teamAName = matchData.teamA?.name || matchData.teamAName;
   const teamBName = matchData.teamB?.name || matchData.teamBName;
   const matchDate = matchData.matchDate || matchData.date;
+  const scoreA = matchData.roundScore?.teamA !== undefined ? matchData.roundScore.teamA : (matchData.teamA?.score !== undefined ? matchData.teamA.score : null);
+  const scoreB = matchData.roundScore?.teamB !== undefined ? matchData.roundScore.teamB : (matchData.teamB?.score !== undefined ? matchData.teamB.score : null);
 
   await db.run(
-    `INSERT OR REPLACE INTO matches (match_id, team_a_name, team_b_name, match_date, pushed_at, raw_data)
-     VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, ?)`,
+    `INSERT OR REPLACE INTO matches (match_id, team_a_name, team_b_name, team_a_score, team_b_score, match_date, pushed_at, raw_data)
+     VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)`,
     [
       matchId,
       teamAName,
       teamBName,
+      scoreA !== null && scoreA !== undefined ? Number(scoreA) : null,
+      scoreB !== null && scoreB !== undefined ? Number(scoreB) : null,
       matchDate,
       JSON.stringify({ ...matchData, status }),
     ]
@@ -92,6 +106,54 @@ export async function recordMatch(db, matchData, status = "COMMITTED_SHEETS") {
   }
 
   return matchId;
+}
+
+/**
+ * Compute cumulative round records for all configured teams from SQLite audit log
+ */
+export async function getTeamRoundRecords(db) {
+  const matches = await db.all("SELECT * FROM matches ORDER BY created_at ASC");
+  const CANONICAL_TEAMS = [
+    "TEAM PTSD",
+    "TEAM UltraViolence",
+    "TEAM We Mind Esp",
+    "TEAM Redline",
+    "TEAM Hexa",
+    "TEAM JBGD",
+    "TEAM Plastic Gng",
+  ];
+
+  const records = {};
+  CANONICAL_TEAMS.forEach((team) => {
+    records[team] = {
+      teamName: team,
+      roundsWon: 0,
+      roundsLost: 0,
+      roundRecord: "0-0",
+    };
+  });
+
+  for (const m of matches) {
+    if (m.team_a_score !== null && m.team_b_score !== null && m.team_a_score !== undefined && m.team_b_score !== undefined) {
+      const sA = Number(m.team_a_score);
+      const sB = Number(m.team_b_score);
+      const teamA = m.team_a_name;
+      const teamB = m.team_b_name;
+
+      if (!records[teamA]) records[teamA] = { teamName: teamA, roundsWon: 0, roundsLost: 0, roundRecord: "0-0" };
+      if (!records[teamB]) records[teamB] = { teamName: teamB, roundsWon: 0, roundsLost: 0, roundRecord: "0-0" };
+
+      records[teamA].roundsWon += sA;
+      records[teamA].roundsLost += sB;
+      records[teamA].roundRecord = `${records[teamA].roundsWon}-${records[teamA].roundsLost}`;
+
+      records[teamB].roundsWon += sB;
+      records[teamB].roundsLost += sA;
+      records[teamB].roundRecord = `${records[teamB].roundsWon}-${records[teamB].roundsLost}`;
+    }
+  }
+
+  return records;
 }
 
 

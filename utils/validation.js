@@ -150,6 +150,33 @@ export function validateMatchData(matchData) {
     errors.push("Team A and Team B must be different teams");
   }
 
+  // Validate round score (if present in matchData)
+  if (matchData.roundScore !== undefined && matchData.roundScore !== null) {
+    const rs = matchData.roundScore;
+    if (typeof rs !== "object") {
+      errors.push("roundScore must be an object with teamA and teamB integer scores");
+    } else {
+      const scoreA = rs.teamA !== undefined && rs.teamA !== null && String(rs.teamA).trim() !== "" ? Number(rs.teamA) : NaN;
+      const scoreB = rs.teamB !== undefined && rs.teamB !== null && String(rs.teamB).trim() !== "" ? Number(rs.teamB) : NaN;
+
+      if (isNaN(scoreA) || !Number.isInteger(scoreA)) {
+        errors.push("Team A round score must be an integer");
+      } else if (scoreA < 0) {
+        errors.push("Team A round score must be >= 0");
+      }
+
+      if (isNaN(scoreB) || !Number.isInteger(scoreB)) {
+        errors.push("Team B round score must be an integer");
+      } else if (scoreB < 0) {
+        errors.push("Team B round score must be >= 0");
+      }
+
+      if (!isNaN(scoreA) && !isNaN(scoreB) && scoreA === scoreB) {
+        errors.push("Team A and Team B round scores must be different (matches cannot end in a tie)");
+      }
+    }
+  }
+
   return {
     valid: errors.length === 0,
     errors,
@@ -187,9 +214,31 @@ export function sanitizeTeam(team) {
  * Sanitize match data into canonical match object
  */
 export function sanitizeMatchData(matchData) {
+  let roundScore = undefined;
+  if (matchData.roundScore && typeof matchData.roundScore === "object") {
+    const sA = Number(matchData.roundScore.teamA);
+    const sB = Number(matchData.roundScore.teamB);
+    if (!isNaN(sA) && !isNaN(sB)) {
+      roundScore = {
+        teamA: Math.round(sA),
+        teamB: Math.round(sB),
+      };
+    }
+  } else if (matchData.teamA?.score !== undefined && matchData.teamB?.score !== undefined) {
+    const sA = Number(matchData.teamA.score);
+    const sB = Number(matchData.teamB.score);
+    if (!isNaN(sA) && !isNaN(sB)) {
+      roundScore = {
+        teamA: Math.round(sA),
+        teamB: Math.round(sB),
+      };
+    }
+  }
+
   return {
     matchId: String(matchData.matchId || "").trim(),
     matchDate: String(matchData.matchDate || matchData.date || "").trim(),
+    roundScore,
     teamA: sanitizeTeam(matchData.teamA || {}),
     teamB: sanitizeTeam(matchData.teamB || {}),
   };

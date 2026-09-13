@@ -81,6 +81,10 @@ function normalizePlayers(players = []) {
 
 function normalizeResult(data) {
   return {
+    roundScore: data?.roundScore && typeof data.roundScore === "object" ? {
+      teamA: Number(data.roundScore.teamA),
+      teamB: Number(data.roundScore.teamB),
+    } : null,
     teamA: {
       color: data?.teamA?.color || data?.teamA?.detectedColor || "red",
       players: normalizePlayers(data?.teamA?.players),
@@ -1703,6 +1707,10 @@ export default function ValorantAnalyzerV2() {
       const payload = {
         matchId,
         matchDate,
+        roundScore: result?.roundScore ? {
+          teamA: Number(result.roundScore.teamA),
+          teamB: Number(result.roundScore.teamB),
+        } : undefined,
         teamA: { name: teamAName, ...cleanForApi(result.teamA) },
         teamB: { name: teamBName, ...cleanForApi(result.teamB) },
       };

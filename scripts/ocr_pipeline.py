@@ -101,7 +101,7 @@ if TESSERACT_CMD:
 #     5→9 glyph confusion, not a boundary problem.
 #
 #   defuses right = 0.994 (978px): trims the black right-edge artifact.
-COLUMN_DEFS = {
+CROPPED_COLUMN_DEFS = {
     "name":        (0.071,  0.270),   # 70px  – 266px
     "agent":       (0.071,  0.270),   # same crop region, agent = 2nd OCR line
     "acs":         (0.275,  0.415),   # 271px – 408px
@@ -112,31 +112,54 @@ COLUMN_DEFS = {
     "defuses":     (0.869,  0.994),   # 855px – 978px
 }
 
+FULL_COLUMN_DEFS = {
+    "name":        (0.138,  0.280),
+    "agent":       (0.138,  0.280),
+    "acs":         (0.280,  0.400),
+    "kda":         (0.390,  0.520),
+    "econ":        (0.520,  0.600),
+    "firstBloods": (0.600,  0.680),
+    "plants":      (0.680,  0.760),
+    "defuses":     (0.760,  0.860),
+}
+
+COLUMN_DEFS = CROPPED_COLUMN_DEFS
+
 # Expected row periodicity (normalized)
 # From measurements: each row is ~52px tall in a 607px image
 EXPECTED_ROW_HEIGHT_RATIO = 52.0 / 607.0   # ≈ 0.0857
 
 # ──────────────────────────────────────────────
-# HSV COLOR RANGES for team detection
+# HSV COLOR RANGES for team detection and row segmentation
 # OpenCV HSV: H=0-180, S=0-255, V=0-255
 #
-# Team A (dark red/maroon): from scan: R=105-116, G=56-60, B=71-80
-#   → in HSV: H≈345-10°→170-5 in OCV scale, S moderate, V moderate
-# Team B (teal):            from scan: R=20-29, G=140-149, B=124-131
-#   → in HSV: H≈168-175°→84-87 OCV, S high, V moderate
-#
-# Key: classify based on the LEFT colored panel only (x=62–270)
-# not the full row width (which is mostly dark gray)
+# Team A (dark red/maroon): H near 0 (0-16) or high wrap (125-180)
+# Team B (teal/cyan):       H=70-110
+# Highlighted MVP / Party:  H=17-69 (Gold / Yellow / Amber / Olive)
 # ──────────────────────────────────────────────
-TEAM_A_HSV = [
-    # Dark red/maroon rows
-    ((0,   30,  40),  (10,  200, 150)),   # H near 0 (red)
-    ((165, 30,  40),  (180, 200, 150)),   # H near 180 (red wraps)
+RED_HSV = [
+    ((0,   20,  25),  (16,  255, 180)),
+    ((125, 20,  25),  (180, 255, 180)),
 ]
-TEAM_B_HSV = [
-    # Teal rows
-    ((78,  80,  60),  (95,  230, 160)),   # H=78-95 in OCV (≈156-190° real)
+TEAL_HSV = [
+    ((70,  20,  25),  (110, 255, 180)),
 ]
+GOLD_HSV = [
+    ((17,  20,  25),  (69,  255, 180)),
+]
+
+def get_pixel_color_type(h_val, s_val, v_val):
+    """Classify pixel into RED, TEAL, GOLD, or None."""
+    for (lo, hi) in RED_HSV:
+        if lo[0] <= h_val <= hi[0] and lo[1] <= s_val <= hi[1] and lo[2] <= v_val <= hi[2]:
+            return 'RED'
+    for (lo, hi) in TEAL_HSV:
+        if lo[0] <= h_val <= hi[0] and lo[1] <= s_val <= hi[1] and lo[2] <= v_val <= hi[2]:
+            return 'TEAL'
+    for (lo, hi) in GOLD_HSV:
+        if lo[0] <= h_val <= hi[0] and lo[1] <= s_val <= hi[1] and lo[2] <= v_val <= hi[2]:
+            return 'GOLD'
+    return None
 
 # ──────────────────────────────────────────────
 # UTILITIES
@@ -169,180 +192,155 @@ def load_and_validate(image_path):
 # ──────────────────────────────────────────────
 # STAGE 2 — DETERMINISTIC ROW DETECTION
 #
-# Strategy: scan the left-panel region (x=62 to x=270) vertically.
-# The left panel is solidly red or teal for each player row.
-# Find contiguous bands of consistent hue in this region.
-# Each band is one player row.
+# Strategy:
+# 1. Detect all 10 player rows across RED, TEAL, and GOLD/MVP row types.
+# 2. Normalize sampling X coordinates to width (handles any resolution).
+# 3. Classify rows into Team A (RED) vs Team B (TEAL) with structural
+#    team-side resolution for highlighted/gold rows.
 # ──────────────────────────────────────────────
-def classify_pixel_team(h_val, s_val, v_val):
-    """Return 'A', 'B', or None given OpenCV HSV values."""
-    for (lo, hi) in TEAM_A_HSV:
-        if lo[0] <= h_val <= hi[0] and lo[1] <= s_val <= hi[1] and lo[2] <= v_val <= hi[2]:
-            return 'A'
-    for (lo, hi) in TEAM_B_HSV:
-        if lo[0] <= h_val <= hi[0] and lo[1] <= s_val <= hi[1] and lo[2] <= v_val <= hi[2]:
-            return 'B'
-    return None
-
 def detect_rows(img, debug_dir=None):
     """
-    Detect all 10 player rows using the left-panel colored strip.
-
-    Scans multiple X positions in the left panel (x=80 to x=240) per row,
-    voting on team classification per Y scanline.
-    Then finds contiguous Y bands = player rows.
-
-    Returns list of dicts: {y, height, team, confidence, row_index}
+    Detect all 10 player rows and assign them to Team A (RED) and Team B (TEAL).
+    Handles special highlighted MVP / gold rank rows reliably.
     """
     h, w = img.shape[:2]
     img_hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
 
-    # X positions to sample in left panel
-    sample_xs = list(range(80, 241, 10))  # 17 sample columns
+    # 1. Search start: skip top tabs in full 16:9 screenshots
+    search_y_start = 200 if h >= 700 else 45
+
+    # Normalized sample X positions across left colored strip
+    sample_xs = [int(w * frac) for frac in np.linspace(0.08, 0.24, 17)]
     n_samples = len(sample_xs)
 
-    # Per-Y vote
-    y_team = []   # 'A', 'B', or None per y
-    y_conf = []   # fraction of samples that agreed
+    y_is_player_row = np.zeros(h, dtype=bool)
 
-    for y in range(h):
-        votes = {'A': 0, 'B': 0}
+    for y in range(search_y_start, h):
+        votes = {'RED': 0, 'TEAL': 0, 'GOLD': 0}
         for x in sample_xs:
             hsv = img_hsv[y, x]
-            t = classify_pixel_team(int(hsv[0]), int(hsv[1]), int(hsv[2]))
-            if t:
-                votes[t] += 1
-        total = votes['A'] + votes['B']
-        if total == 0:
-            y_team.append(None)
-            y_conf.append(0.0)
-        else:
-            winner = 'A' if votes['A'] >= votes['B'] else 'B'
-            conf = max(votes['A'], votes['B']) / n_samples
-            if conf >= 0.15:   # at least 15% of samples must agree
-                y_team.append(winner)
-                y_conf.append(conf)
-            else:
-                y_team.append(None)
-                y_conf.append(0.0)
+            c = get_pixel_color_type(int(hsv[0]), int(hsv[1]), int(hsv[2]))
+            if c:
+                votes[c] += 1
+        total = sum(votes.values())
+        if total >= 2:
+            y_is_player_row[y] = True
 
-    # Find contiguous bands
-    MIN_ROW_H = max(20, int(h * EXPECTED_ROW_HEIGHT_RATIO * 0.4))
-    MAX_ROW_H = int(h * EXPECTED_ROW_HEIGHT_RATIO * 1.8)
+    # 2. Find contiguous Y bands
+    MIN_ROW_H = 20
+    if h <= 650:
+        EXPECTED_ROW_H = 54.0 * (h / 607.0)
+    elif h <= 850:
+        EXPECTED_ROW_H = 53.5
+    elif h <= 950:
+        EXPECTED_ROW_H = 54.5
+    else:
+        EXPECTED_ROW_H = h * (64.5 / 1080.0)
 
     bands = []
-    in_band = False
-    band_start = 0
-    band_team = None
-    band_conf_sum = 0.0
+    in_b = False
+    b_start = 0
+    for y in range(search_y_start, h):
+        if y_is_player_row[y] and not in_b:
+            in_b = True
+            b_start = y
+        elif not y_is_player_row[y] and in_b:
+            in_b = False
+            bh = y - b_start
+            if bh >= MIN_ROW_H:
+                bands.append({'y': b_start, 'height': bh})
+    if in_b:
+        bh = h - b_start
+        if bh >= MIN_ROW_H:
+            bands.append({'y': b_start, 'height': bh})
 
-    for y in range(h):
-        t = y_team[y]
-        c = y_conf[y]
-
-        if t is not None and not in_band:
-            in_band = True
-            band_start = y
-            band_team = t
-            band_conf_sum = c
-
-        elif t is not None and in_band:
-            if t != band_team:
-                # team changed mid-band — close current, start new
-                band_h = y - band_start
-                if band_h >= MIN_ROW_H:
-                    bands.append({
-                        'y': band_start,
-                        'height': band_h,
-                        'team': band_team,
-                        'conf_sum': band_conf_sum,
-                        'px_count': band_h,
-                    })
-                in_band = True
-                band_start = y
-                band_team = t
-                band_conf_sum = c
-            else:
-                band_conf_sum += c
-
-        elif t is None and in_band:
-            band_h = y - band_start
-            if band_h >= MIN_ROW_H:
-                bands.append({
-                    'y': band_start,
-                    'height': band_h,
-                    'team': band_team,
-                    'conf_sum': band_conf_sum,
-                    'px_count': band_h,
-                })
-            in_band = False
-
-    if in_band:
-        band_h = h - band_start
-        if band_h >= MIN_ROW_H:
-            bands.append({
-                'y': band_start,
-                'height': band_h,
-                'team': band_team,
-                'conf_sum': band_conf_sum,
-                'px_count': band_h,
-            })
-
-    # Split oversized bands (merged rows)
-    EXPECTED_ROW_H = h * EXPECTED_ROW_HEIGHT_RATIO
-    split_bands = []
-    for band in bands:
-        bh = band['height']
-        if bh > MAX_ROW_H:
-            # Split into sub-rows of ~EXPECTED_ROW_H using valley detection in Y votes
-            n_sub = round(bh / EXPECTED_ROW_H)
+    # 3. Subdivide merged blocks into individual rows using expected row height
+    split_rows = []
+    for b in bands:
+        bh = b['height']
+        if bh > 75:
+            n_sub = int(round(bh / EXPECTED_ROW_H))
             if n_sub < 2:
                 n_sub = 2
-            eprint(f"[ROWS] Splitting band y={band['y']} h={bh} into {n_sub} sub-rows")
-
-            # Find lowest-confidence Y within band to use as split points
-            confs = y_conf[band['y']:band['y'] + bh]
-            sub_h = bh // n_sub
             for i in range(n_sub):
-                y0 = band['y'] + i * sub_h
-                y1 = band['y'] + (i + 1) * sub_h if i < n_sub - 1 else band['y'] + bh
-                actual_h = y1 - y0
-                if actual_h >= MIN_ROW_H:
-                    sub_conf = sum(confs[i*sub_h: (i+1)*sub_h]) / max(1, actual_h)
-                    split_bands.append({
-                        'y': y0,
-                        'height': actual_h,
-                        'team': band['team'],
-                        'conf_sum': sub_conf * actual_h,
-                        'px_count': actual_h,
-                    })
+                y0 = int(round(b['y'] + i * EXPECTED_ROW_H))
+                y1 = int(round(b['y'] + (i + 1) * EXPECTED_ROW_H))
+                if y0 < h:
+                    split_rows.append({'y': y0, 'height': min(y1 - y0, h - y0)})
         else:
-            split_bands.append(band)
+            split_rows.append(b)
 
-    # Sort by Y position (scoreboard order)
-    split_bands.sort(key=lambda b: b['y'])
+    split_rows.sort(key=lambda b: b['y'])
 
-    # Build final row list with confidence
-    rows = []
-    for i, band in enumerate(split_bands):
-        conf = band['conf_sum'] / max(1, band['px_count'])
-        rows.append({
+    # Keep exactly the 10 scoreboard rows
+    if len(split_rows) > 10:
+        split_rows = split_rows[:10]
+
+    # 4. Classify each row's team color
+    raw_rows = []
+    for i, r in enumerate(split_rows):
+        y0 = r['y']
+        y1 = min(h, y0 + r['height'])
+        crop_hsv = img_hsv[y0:y1, int(w*0.07):int(w*0.25)]
+
+        c_votes = {'RED': 0, 'TEAL': 0, 'GOLD': 0}
+        for yr in range(crop_hsv.shape[0]):
+            for xr in range(crop_hsv.shape[1]):
+                c = get_pixel_color_type(int(crop_hsv[yr, xr, 0]), int(crop_hsv[yr, xr, 1]), int(crop_hsv[yr, xr, 2]))
+                if c:
+                    c_votes[c] += 1
+
+        if c_votes['RED'] > c_votes['TEAL'] and c_votes['RED'] > c_votes['GOLD']:
+            dominant = 'RED'
+        elif c_votes['TEAL'] > c_votes['RED'] and c_votes['TEAL'] > c_votes['GOLD']:
+            dominant = 'TEAL'
+        elif c_votes['GOLD'] > 0:
+            dominant = 'GOLD'
+        else:
+            dominant = 'UNKNOWN'
+
+        raw_rows.append({
             'row_index': i,
             'x': 0,
-            'y': int(band['y']),
+            'y': y0,
             'width': w,
-            'height': int(band['height']),
-            'team': band['team'],
-            'confidence': round(float(conf), 3),
+            'height': r['height'],
+            'dominant': dominant,
+            'confidence': 0.95,
         })
 
-    team_a = [r for r in rows if r['team'] == 'A']
-    team_b = [r for r in rows if r['team'] == 'B']
-    eprint(f"[ROWS] Total rows: {len(rows)} | Team A: {len(team_a)} | Team B: {len(team_b)}")
+    # 5. Team Assignment:
+    # Stage 1: Deterministic classification of clear RED and TEAL rows
+    for r in raw_rows:
+        if r['dominant'] == 'RED':
+            r['team'] = 'A'
+        elif r['dominant'] == 'TEAL':
+            r['team'] = 'B'
+        else:
+            r['team'] = 'UNKNOWN'
+
+    red_count = sum(1 for r in raw_rows if r['team'] == 'A')
+    teal_count = sum(1 for r in raw_rows if r['team'] == 'B')
+
+    # Stage 2: Resolve YELLOW/GOLD highlighted or ambiguous rows using 5-player balancing rule
+    # Only assign when one team has reached 5 players and the other has fewer than 5.
+    for r in raw_rows:
+        if r['team'] == 'UNKNOWN' and r['dominant'] in ('GOLD', 'UNKNOWN'):
+            if red_count >= 5 and teal_count < 5:
+                r['team'] = 'B'
+                teal_count += 1
+            elif teal_count >= 5 and red_count < 5:
+                r['team'] = 'A'
+                red_count += 1
+            # If both teams already have >= 5 or both have < 5, leave as UNKNOWN
+
+    team_a = [r for r in raw_rows if r['team'] == 'A']
+    team_b = [r for r in raw_rows if r['team'] == 'B']
+    eprint(f"[ROWS] Total rows: {len(raw_rows)} | Team A (RED): {len(team_a)} | Team B (TEAL): {len(team_b)}")
 
     if debug_dir:
         annotated = img.copy()
-        for r in rows:
+        for r in raw_rows:
             color = (50, 50, 220) if r['team'] == 'A' else (200, 180, 0)
             label = f"{r['team']}{team_a.index(r)+1 if r['team']=='A' else team_b.index(r)+1} y={r['y']}"
             cv2.rectangle(annotated,
@@ -353,18 +351,7 @@ def detect_rows(img, debug_dir=None):
                         cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
         save_debug(annotated, 'annotated/scoreboard_v2.png', debug_dir)
 
-        # Save team masks (for left panel only)
-        mask_a = np.zeros(img.shape[:2], dtype=np.uint8)
-        mask_b = np.zeros(img.shape[:2], dtype=np.uint8)
-        for y in range(h):
-            if y_team[y] == 'A':
-                mask_a[y, :] = 255
-            elif y_team[y] == 'B':
-                mask_b[y, :] = 255
-        save_debug(cv2.cvtColor(mask_a, cv2.COLOR_GRAY2BGR), 'annotated/mask_teamA_v2.png', debug_dir)
-        save_debug(cv2.cvtColor(mask_b, cv2.COLOR_GRAY2BGR), 'annotated/mask_teamB_v2.png', debug_dir)
-
-    return rows
+    return raw_rows
 
 # ──────────────────────────────────────────────
 # STAGE 3 — CROP COLUMN FROM ROW
@@ -372,8 +359,9 @@ def detect_rows(img, debug_dir=None):
 def crop_column(row_crop, col_key):
     """Extract a column slice using normalized COLUMN_DEFS."""
     w = row_crop.shape[1]
-    x0 = int(w * COLUMN_DEFS[col_key][0])
-    x1 = int(w * COLUMN_DEFS[col_key][1])
+    col_defs = CROPPED_COLUMN_DEFS if w < 1200 else FULL_COLUMN_DEFS
+    x0 = int(w * col_defs[col_key][0])
+    x1 = int(w * col_defs[col_key][1])
     return row_crop[:, x0:x1]
 
 # ──────────────────────────────────────────────
@@ -381,24 +369,21 @@ def crop_column(row_crop, col_key):
 # ──────────────────────────────────────────────
 def preprocess_dark_bg(region, upscale=3.5):
     """
-    For: name, agent — light text on colored (red/teal) background.
+    For: name, agent — light text on colored (red/teal/gold) background.
     Invert so text becomes dark on white for Tesseract.
     """
     gray = cv2.cvtColor(region, cv2.COLOR_BGR2GRAY)
     h, w = gray.shape
     gray = cv2.resize(gray, (int(w * upscale), int(h * upscale)),
                       interpolation=cv2.INTER_LANCZOS4)
-    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(4, 4))
-    gray = clahe.apply(gray)
-    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    _, binary = cv2.threshold(gray, 130, 255, cv2.THRESH_BINARY_INV)
     binary = cv2.medianBlur(binary, 3)
     return binary
 
-def preprocess_dark_stat(region, upscale=4.0):
+def preprocess_dark_stat(region, dominant='DARK', upscale=4.0):
     """
-    For: ACS, ECON, FB, PLT, DEF — light text on dark gray background.
-    BINARY (not INV) because Otsu correctly identifies light text as foreground
-    when background is dark. Adding white border is counterproductive — omit it.
+    For: ACS, ECON, FB, PLT, DEF — light text on dark gray/red/teal background,
+    or dark text on light gold background.
     """
     gray = cv2.cvtColor(region, cv2.COLOR_BGR2GRAY)
     h, w = gray.shape
@@ -406,16 +391,17 @@ def preprocess_dark_stat(region, upscale=4.0):
         return gray
     gray = cv2.resize(gray, (int(w * upscale), int(h * upscale)),
                       interpolation=cv2.INTER_LANCZOS4)
-    clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(2, 2))
-    gray = clahe.apply(gray)
-    # BINARY: digits are lighter than the dark background → Otsu puts them in foreground
-    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    binary = cv2.medianBlur(binary, 3)
+    if dominant == 'GOLD':
+        _, binary = cv2.threshold(gray, 130, 255, cv2.THRESH_BINARY_INV)
+        binary = cv2.medianBlur(binary, 3)
+    else:
+        # Standard RED and TEAL rows: bright white text (values 180-240) on dark background (30-100)
+        _, binary = cv2.threshold(gray, 130, 255, cv2.THRESH_BINARY)
     return binary
 
-def preprocess_kda(region, upscale=4.0):
-    """KDA uses same pipeline as numeric stats."""
-    return preprocess_dark_stat(region, upscale)
+def preprocess_kda(region, dominant='DARK', upscale=3.0):
+    """KDA uses upscale 3.0 to keep slash separator sharp without digit distortion."""
+    return preprocess_dark_stat(region, dominant, upscale)
 
 # ──────────────────────────────────────────────
 # STAGE 5 — OCR CALLS
@@ -434,13 +420,16 @@ NUM_WHITELIST    = "0123456789"
 KDA_WHITELIST    = "0123456789/ "
 
 def ocr_name_agent(row_crop, debug_dir=None, label=""):
-    col = crop_column(row_crop, "name")
+    # Trim top 8% of row height to ignore row divider line artifact from preceding row
+    rh = row_crop.shape[0]
+    row_trimmed = row_crop[int(rh * 0.08):, :]
+    col = crop_column(row_trimmed, "name")
     proc = preprocess_dark_bg(col)
     if debug_dir and label:
         save_debug(col, f"row_crops/{label}_name_raw.png", debug_dir)
         save_debug(proc, f"row_crops/{label}_name_proc.png", debug_dir)
     # PSM 6 = assume uniform block of text → reads multiple lines (name + agent label)
-    raw = run_tess(proc, psm=6, whitelist=NAME_WHITELIST + "\n")
+    raw = run_tess(proc, psm=6)
     lines = [l.strip() for l in raw.splitlines() if l.strip()]
     name  = lines[0] if len(lines) >= 1 else ""
     agent = lines[1] if len(lines) >= 2 else ""
@@ -448,28 +437,36 @@ def ocr_name_agent(row_crop, debug_dir=None, label=""):
     agent = re.sub(r"[^A-Z]", "", agent.upper()) if agent else ""
     return name.strip(), agent, raw
 
-def ocr_number(row_crop, col_key, debug_dir=None, label=""):
+def ocr_number(row_crop, col_key, dominant='DARK', debug_dir=None, label=""):
     """OCR for ACS, ECON, PLT — moderate-width numeric columns."""
     col = crop_column(row_crop, col_key)
-    proc = preprocess_dark_stat(col)
+    proc = preprocess_dark_stat(col, dominant)
     if debug_dir and label:
         save_debug(col, f"row_crops/{label}_{col_key}_raw.png", debug_dir)
         save_debug(proc, f"row_crops/{label}_{col_key}_proc.png", debug_dir)
     # PSM 7 confirmed empirically better than PSM 8 for these crop widths.
-    # No white border padding — it breaks Tesseract on small crops.
+    # Fall back to PSM 6 if PSM 7 yields an empty result.
     raw = run_tess(proc, psm=7, whitelist=NUM_WHITELIST)
+    if not raw.strip():
+        raw_fallback = run_tess(proc, psm=6, whitelist=NUM_WHITELIST)
+        if raw_fallback.strip():
+            raw = raw_fallback
     return raw.strip()
 
-def ocr_fb(row_crop, debug_dir=None, label=""):
+def ocr_fb(row_crop, dominant='DARK', debug_dir=None, label=""):
     """OCR for First Bloods — single digit, sometimes low contrast.
     PSM 6 (uniform block) outperforms PSM 7 for very small/sparse digit cells.
     """
     col = crop_column(row_crop, "firstBloods")
-    proc = preprocess_dark_stat(col)
+    proc = preprocess_dark_stat(col, dominant)
     if debug_dir and label:
         save_debug(col, f"row_crops/{label}_firstBloods_raw.png", debug_dir)
         save_debug(proc, f"row_crops/{label}_firstBloods_proc.png", debug_dir)
     raw = run_tess(proc, psm=6, whitelist=NUM_WHITELIST)
+    if not raw.strip():
+        raw_fallback = run_tess(proc, psm=7, whitelist=NUM_WHITELIST)
+        if raw_fallback.strip():
+            raw = raw_fallback
     return raw.strip()
 
 def ocr_defuses(row_crop, debug_dir=None, label=""):
@@ -505,14 +502,18 @@ def ocr_defuses(row_crop, debug_dir=None, label=""):
 
     return result
 
-def ocr_kda(row_crop, debug_dir=None, label=""):
+def ocr_kda(row_crop, dominant='DARK', debug_dir=None, label=""):
     col = crop_column(row_crop, "kda")
-    proc = preprocess_kda(col)
+    proc = preprocess_kda(col, dominant)
     if debug_dir and label:
         save_debug(col, f"row_crops/{label}_kda_raw.png", debug_dir)
         save_debug(proc, f"row_crops/{label}_kda_proc.png", debug_dir)
     # PSM 7 = single text line; KDA whitelist avoids non-numeric/slash noise
     raw = run_tess(proc, psm=7, whitelist=KDA_WHITELIST)
+    if not raw or "/" not in raw:
+        raw_fallback = run_tess(proc, psm=6, whitelist=KDA_WHITELIST)
+        if raw_fallback and "/" in raw_fallback:
+            raw = raw_fallback
     return raw.strip()
 
 # ──────────────────────────────────────────────
@@ -521,6 +522,8 @@ def ocr_kda(row_crop, debug_dir=None, label=""):
 def parse_int(raw, field):
     clean = re.sub(r"[^\d]", "", raw)
     if clean:
+        if field == "acs" and len(clean) == 4 and clean[0] == '7':
+            clean = clean[1:]
         return int(clean), None
     return 0, f"{field}: unreadable raw='{raw}'"
 
@@ -532,27 +535,147 @@ def parse_kda(raw):
     m = _re.search(r"(\d+)\s*/\s*(\d+)\s*/\s*(\d+)", clean)
     if m:
         k, d, a = m.group(1), m.group(2), m.group(3)
-        # Artifact: the column separator line is consistently read as '7' by Tesseract
-        # when it immediately precedes the final assist digit (confirmed empirically).
-        # Signature: last component is exactly 2 digits AND starts with '7'.
-        # Legitimate 2-digit assists (e.g. 12, 15) start with '1' or '2', never '7'.
-        if len(a) == 2 and a[0] == '7':
+        # Artifact: the column separator line is consistently read as '7' or '6' by Tesseract
+        # when it immediately precedes the final assist digit (e.g. '74'->'4', '64'->'4').
+        # Signature: last component is exactly 2 digits, starts with '6' or '7', and is > 30.
+        # Legitimate 2-digit assists (e.g. 11, 12, 14) start with '1' or '2'.
+        if len(a) == 2 and a[0] in ('6', '7') and int(a) > 30:
             a_stripped = a[1:]
-            return f"{k}/{d}/{a_stripped}", f"kda: stripped leading separator-glyph '7' from '{raw}'"
+            return f"{k}/{d}/{a_stripped}", f"kda: stripped leading separator-glyph '{a[0]}' from '{raw}'"
         return f"{k}/{d}/{a}", None
 
-    # 2. Secondary recovery pattern: second slash misread as '7' or merged (e.g. "16/1975" -> 16/19/5)
-    # Signature: K / (1 or 2 digits Deaths) + ('7' separator misread) + (1 or 2 digits Assists)
-    m2 = _re.search(r"(\d+)\s*/\s*(\d{1,2})\s*7\s*(\d{1,2})", clean)
-    if m2:
-        k, d, a = m2.group(1), m2.group(2), m2.group(3)
-        return f"{k}/{d}/{a}", f"kda: recovered missing slash from separator artifact in '{raw}'"
+    # 2. Secondary recovery pattern: second slash misread as '7' or '1'
+    # e.g. '17/916' (tail='916', 3 digits), '17/2179' (tail='2179', 4 digits), '9/9711' (tail='9711', 4 digits)
+    m_single_slash = _re.search(r"^(\d+)\s*/\s*(\d{3,4})$", clean)
+    if m_single_slash:
+        k, tail = m_single_slash.group(1), m_single_slash.group(2)
+        if len(tail) == 3:
+            # 3 digits e.g. '916' -> d=9, a=6 (middle digit was misread slash)
+            d, a = tail[0], tail[2]
+            return f"{k}/{d}/{a}", f"kda: recovered missing slash from '{raw}'"
+        elif len(tail) == 4:
+            # 4 digits: either (2-digit d, '7' separator, 1-digit a) or (1-digit d, '7' separator, 2-digit a)
+            d1, a1 = int(tail[:2]), int(tail[3])
+            d2, a2 = int(tail[0]), int(tail[2:])
+            if d1 <= 40 and (tail[2] in ('6', '7') or a1 <= 30) and int(tail[:2]) < 90:
+                if tail[0:2] != '97':
+                    return f"{k}/{tail[:2]}/{tail[3]}", f"kda: recovered missing slash from '{raw}'"
+            if d2 <= 40 and a2 <= 40:
+                return f"{k}/{tail[0]}/{tail[2:]}", f"kda: recovered missing slash from '{raw}'"
 
-    # 3. Unreadable KDA: return empty string so frontend exposes empty field for manual correction
     return "", f"kda: unreadable raw='{raw}'"
 
+def extract_match_round_score(img, debug_dir=None):
+    """
+    Extract match round score (e.g. 13 VICTORY 6 -> Team A: 6, Team B: 13).
+    Preserves side identity:
+    - Team A (RED): corresponds to the RED score (right banner / RED hue).
+    - Team B (TEAL): corresponds to the TEAL score (left banner / TEAL hue).
+    """
+    h, w = img.shape[:2]
+    # Header region in full Valorant screenshots is in top ~15%
+    top_crop = img[0:min(120, int(h * 0.15)), :]
+    gray = cv2.cvtColor(top_crop, cv2.COLOR_BGR2GRAY)
+    top_hsv = cv2.cvtColor(top_crop, cv2.COLOR_BGR2HSV)
+
+    _, otsu = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    _, bin_70 = cv2.threshold(gray, 70, 255, cv2.THRESH_BINARY)
+    _, bin_100 = cv2.threshold(gray, 100, 255, cv2.THRESH_BINARY)
+
+    candidates = [gray, otsu, bin_70, bin_100]
+
+    for candidate in candidates:
+        for psm in [6, 11, 3]:
+            try:
+                # 1. First attempt: image_to_data for discrete digit bounding boxes & color sampling
+                data = pytesseract.image_to_data(candidate, output_type=pytesseract.Output.DICT, config=f"--psm {psm}")
+                num_entries = []
+                for i in range(len(data['text'])):
+                    word = data['text'][i].strip()
+                    m = re.match(r"^(\d{1,2})$", word)
+                    if m:
+                        val = int(m.group(1))
+                        if 0 <= val <= 30:
+                            x, y, bw, bh = data['left'][i], data['top'][i], data['width'][i], data['height'][i]
+                            # Sample color
+                            box_hsv = top_hsv[y:y+bh, x:x+bw]
+                            mask_colored = (box_hsv[:, :, 1] > 25) & (box_hsv[:, :, 2] > 60)
+                            hues = box_hsv[:, :, 0][mask_colored] if np.any(mask_colored) else []
+                            med_h = np.median(hues) if len(hues) > 0 else None
+
+                            color_vote = None
+                            if med_h is not None:
+                                if med_h <= 15 or med_h >= 150:
+                                    color_vote = "RED"
+                                elif 60 <= med_h <= 115:
+                                    color_vote = "TEAL"
+
+                            num_entries.append({
+                                "val": val,
+                                "x": x,
+                                "rel_x": x / w,
+                                "color": color_vote,
+                            })
+
+                if len(num_entries) >= 2:
+                    num_entries.sort(key=lambda item: item['x'])
+                    left_entry = num_entries[0]
+                    right_entry = num_entries[-1]
+                    s_left = left_entry['val']
+                    s_right = right_entry['val']
+
+                    if (s_left >= 13 or s_right >= 13) and s_left != s_right:
+                        if left_entry['color'] == 'RED' and right_entry['color'] == 'TEAL':
+                            score_a = s_left
+                            score_b = s_right
+                        elif left_entry['color'] == 'TEAL' and right_entry['color'] == 'RED':
+                            score_a = s_right
+                            score_b = s_left
+                        else:
+                            # Standard Valorant layout: Left = Friendly/TEAL (Team B), Right = Enemy/RED (Team A)
+                            score_a = s_right
+                            score_b = s_left
+
+                        return {
+                            "teamAScore": score_a,
+                            "teamBScore": score_b,
+                            "winnerScore": max(score_a, score_b),
+                            "loserScore": min(score_a, score_b),
+                        }
+
+                # 2. Fallback: line regex parsing
+                text = pytesseract.image_to_string(candidate, config=f"--psm {psm}").strip()
+                m = re.search(r"(\d{1,2})\s*(?:VICTORY|DEFEAT|[A-Z\s]+)?\s*(\d{1,2})", text, re.IGNORECASE)
+                if m:
+                    s_first, s_second = int(m.group(1)), int(m.group(2))
+                    if (s_first >= 13 or s_second >= 13) and 0 <= s_first <= 30 and 0 <= s_second <= 30 and s_first != s_second:
+                        score_a = s_second  # Right score = Enemy / RED side = Team A
+                        score_b = s_first   # Left score = Friendly / TEAL side = Team B
+                        return {
+                            "teamAScore": score_a,
+                            "teamBScore": score_b,
+                            "winnerScore": max(score_a, score_b),
+                            "loserScore": min(score_a, score_b),
+                            "raw": text.split("\n")[0],
+                        }
+            except Exception:
+                continue
+    return None
+
 def normalize_name(raw):
-    return re.sub(r"\s+", " ", raw.strip()).strip("|. ")
+    # Strip non-ASCII or unprintable artifacts
+    s = re.sub(r"[^\x20-\x7E]+", "", raw.strip())
+    # Fix OCR glyph confusion where single-stroke capital 'I' at word start is read as '|', '!', or '1' before a word
+    # e.g. '| Am' -> 'I Am', '1 Am' -> 'I Am', '1Am' -> 'I Am'
+    s = re.sub(r"^[\|!]\s*", "I ", s)
+    s = re.sub(r"^1\s+(?=[A-Za-z])", "I ", s)
+    s = re.sub(r"^1(?=[A-Z][a-z])", "I ", s)
+    # Strip leading/trailing punctuation artifacts (dots, commas, pluses, tildes, hyphens, slashes)
+    s = re.sub(r"^[\s\.\,\+\~\-\\\/]+", "", s)
+    s = re.sub(r"[\s\.\,\+\~\-\\\/]+$", "", s)
+    # Collapse multiple spaces
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
 
 # ──────────────────────────────────────────────
 # STAGE 7 — PROCESS ONE ROW
@@ -567,15 +690,16 @@ def process_row(img, row, row_label, debug_dir=None):
 
     warnings = []
 
+    dominant = row.get('dominant', 'DARK')
     name, agent, raw_name_full = ocr_name_agent(row_crop, debug_dir, row_label)
     name = normalize_name(name)
 
-    raw_acs  = ocr_number(row_crop, "acs",    debug_dir, row_label)
-    raw_econ = ocr_number(row_crop, "econ",   debug_dir, row_label)
-    raw_fb   = ocr_fb(row_crop,               debug_dir, row_label)  # PSM 6, wider
-    raw_plt  = ocr_number(row_crop, "plants", debug_dir, row_label)
+    raw_acs  = ocr_number(row_crop, "acs",    dominant, debug_dir, row_label)
+    raw_econ = ocr_number(row_crop, "econ",   dominant, debug_dir, row_label)
+    raw_fb   = ocr_fb(row_crop,               dominant, debug_dir, row_label)  # PSM 6, wider
+    raw_plt  = ocr_number(row_crop, "plants", dominant, debug_dir, row_label)
     raw_def  = ocr_defuses(row_crop,          debug_dir, row_label)  # upscale=5, PSM 6
-    raw_kda  = ocr_kda(row_crop,              debug_dir, row_label)
+    raw_kda  = ocr_kda(row_crop,              dominant, debug_dir, row_label)
 
     acs,  w1 = parse_int(raw_acs,  "acs")
     econ, w2 = parse_int(raw_econ, "econ")
@@ -616,6 +740,11 @@ def run_pipeline(image_path, debug_dir=None):
     img = load_and_validate(image_path)
     h, w = img.shape[:2]
 
+    # ── Match round score detection (from top banner if present) ──
+    round_score = extract_match_round_score(img, debug_dir)
+    if round_score:
+        eprint(f"[SCORE] Match round score detected: {round_score['teamAScore']}-{round_score['teamBScore']} (Winner: {round_score['winnerScore']})")
+
     # ── Row detection ──
     rows = detect_rows(img, debug_dir)
 
@@ -653,6 +782,12 @@ def run_pipeline(image_path, debug_dir=None):
         return {k: v for k, v in p.items() if not k.startswith('_')}
 
     output = {
+        "roundScore": {
+            "teamA": round_score["teamAScore"],
+            "teamB": round_score["teamBScore"],
+            "winnerScore": round_score["winnerScore"],
+            "loserScore": round_score["loserScore"],
+        } if round_score else None,
         "teamA": {
             "detectedColor": "red",
             "players": [clean(p) for p in players_a],

@@ -181,9 +181,17 @@ export async function analyzeScoreboard(imageBase64, mimeType = "image/png", opt
       players: result.teamB.players.map((p, idx) => sanitizeExtractedPlayer(p, "Team B", idx)),
     };
 
+    const roundScore = result.roundScore && typeof result.roundScore === "object" ? {
+      teamA: Number(result.roundScore.teamA),
+      teamB: Number(result.roundScore.teamB),
+      winnerScore: Number(result.roundScore.winnerScore || Math.max(result.roundScore.teamA, result.roundScore.teamB)),
+      loserScore: Number(result.roundScore.loserScore || Math.min(result.roundScore.teamA, result.roundScore.teamB)),
+    } : null;
+
     return {
       teamA: sanitizedTeamA,
       teamB: sanitizedTeamB,
+      roundScore: roundScore,
     };
   } finally {
     // 5. Guaranteed cleanup of temporary image file in all cases

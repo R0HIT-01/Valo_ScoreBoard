@@ -104,29 +104,61 @@ function jsonResponse(data) {
 
 /**
  * Idempotent initialization of spreadsheet structure
- * Creates/repairs CONFIG tab and 8 Team tabs without overwriting existing match data.
+ * Creates/repairs CONFIG tab (5 columns) and 7 Team tabs without overwriting existing match data.
  */
 function initSpreadsheet() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const createdSheets = [];
   const existingSheets = [];
 
-  // 1. Initialize CONFIG sheet
+  // 1. Initialize CONFIG sheet with cumulative round statistics
   let configSheet = ss.getSheetByName("CONFIG");
   if (!configSheet) {
     configSheet = ss.insertSheet("CONFIG");
-    configSheet.appendRow(["Team ID", "Team Name"]);
-    const headerRange = configSheet.getRange(1, 1, 1, 2);
+    configSheet.appendRow(["Team ID", "Team Name", "Rounds Won", "Rounds Lost", "Round Record"]);
+    const headerRange = configSheet.getRange(1, 1, 1, 5);
     headerRange.setFontWeight("bold");
     headerRange.setBackground("#1F2937");
     headerRange.setFontColor("#FFFFFF");
+    headerRange.setHorizontalAlignment("center");
 
     DEFAULT_TEAMS.forEach(function (team) {
-      configSheet.appendRow([team.id, team.name]);
+      configSheet.appendRow([team.id, team.name, 0, 0, "0-0"]);
     });
-    configSheet.autoResizeColumns(1, 2);
+    configSheet.getRange(2, 3, DEFAULT_TEAMS.length, 3).setHorizontalAlignment("center");
+    configSheet.autoResizeColumns(1, 5);
     createdSheets.push("CONFIG");
   } else {
+    // If CONFIG already exists, ensure header has the 5 columns and initial values are present
+    const lastCol = Math.max(2, configSheet.getLastColumn());
+    const headerValues = configSheet.getRange(1, 1, 1, lastCol).getValues()[0];
+    if (headerValues.length < 5 || headerValues[2] !== "Rounds Won") {
+      configSheet.getRange(1, 1, 1, 5).setValues([["Team ID", "Team Name", "Rounds Won", "Rounds Lost", "Round Record"]]);
+      const headerRange = configSheet.getRange(1, 1, 1, 5);
+      headerRange.setFontWeight("bold");
+      headerRange.setBackground("#1F2937");
+      headerRange.setFontColor("#FFFFFF");
+      headerRange.setHorizontalAlignment("center");
+
+      const lastRow = configSheet.getLastRow();
+      if (lastRow >= 2) {
+        for (let r = 2; r <= lastRow; r++) {
+          const wonVal = configSheet.getRange(r, 3).getValue();
+          const lostVal = configSheet.getRange(r, 4).getValue();
+          if (wonVal === "" || wonVal === null || isNaN(Number(wonVal))) {
+            configSheet.getRange(r, 3).setValue(0);
+          }
+          if (lostVal === "" || lostVal === null || isNaN(Number(lostVal))) {
+            configSheet.getRange(r, 4).setValue(0);
+          }
+          const won = Number(configSheet.getRange(r, 3).getValue()) || 0;
+          const lost = Number(configSheet.getRange(r, 4).getValue()) || 0;
+          configSheet.getRange(r, 5).setValue(won + "-" + lost);
+        }
+        configSheet.getRange(2, 3, lastRow - 1, 3).setHorizontalAlignment("center");
+      }
+      configSheet.autoResizeColumns(1, 5);
+    }
     existingSheets.push("CONFIG");
   }
 
@@ -156,6 +188,30 @@ function initSpreadsheet() {
     createdSheets: createdSheets,
     existingSheets: existingSheets,
   };
+}
+
+/**
+ * Update cumulative rounds won and lost for a team in the CONFIG sheet
+ */
+function updateConfigRoundRecord(configSheet, teamName, wonDelta, lostDelta) {
+  const data = configSheet.getDataRange().getValues();
+  for (let r = 1; r < data.length; r++) { // skip row 0 (header)
+    const rowTeamName = String(data[r][1] || "").trim();
+    if (rowTeamName === teamName) {
+      const currentWon = Number(data[r][2]) || 0;
+      const currentLost = Number(data[r][3]) || 0;
+      const newWon = currentWon + wonDelta;
+      const newLost = currentLost + lostDelta;
+      const newRecord = newWon + "-" + newLost;
+
+      configSheet.getRange(r + 1, 3).setValue(newWon);
+      configSheet.getRange(r + 1, 4).setValue(newLost);
+      configSheet.getRange(r + 1, 5).setValue(newRecord);
+      configSheet.getRange(r + 1, 3, 1, 3).setHorizontalAlignment("center");
+      return { teamName: teamName, roundsWon: newWon, roundsLost: newLost, roundRecord: newRecord };
+    }
+  }
+  return null;
 }
 
 /**
@@ -267,6 +323,36 @@ function appendMatch(match) {
   const errB = validatePlayerGroup(teamB.players, "Team B");
   if (errB) return { success: false, error: { code: "MALFORMED_PLAYER", message: errB } };
 
+  // Preflight Validation 4b: Round Score Validation (if provided)
+  var scoreA = null;
+  var scoreB = null;
+  if (match.roundScore && typeof match.roundScore === "object") {
+    if (match.roundScore.teamA !== undefined && match.roundScore.teamA !== null && String(match.roundScore.teamA).trim() !== "") {
+      scoreA = Number(match.roundScore.teamA);
+    }
+    if (match.roundScore.teamB !== undefined && match.roundScore.teamB !== null && String(match.roundScore.teamB).trim() !== "") {
+      scoreB = Number(match.roundScore.teamB);
+    }
+  } else if (teamA.score !== undefined && teamB.score !== undefined) {
+    scoreA = Number(teamA.score);
+    scoreB = Number(teamB.score);
+  }
+
+  if (scoreA !== null && scoreB !== null) {
+    if (isNaN(scoreA) || isNaN(scoreB) || scoreA < 0 || scoreB < 0 || Math.floor(scoreA) !== scoreA || Math.floor(scoreB) !== scoreB) {
+      return {
+        success: false,
+        error: { code: "INVALID_ROUND_SCORE", message: "Round scores must be non-negative integers" },
+      };
+    }
+    if (scoreA === scoreB) {
+      return {
+        success: false,
+        error: { code: "INVALID_ROUND_SCORE", message: "Team A and Team B round scores must be different (matches cannot end in a tie)" },
+      };
+    }
+  }
+
   // Preflight Validation 5: Check destination sheets exist
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheetA = ss.getSheetByName(teamA.name);
@@ -305,10 +391,24 @@ function appendMatch(match) {
   writeMatchBlock(sheetA, matchId, matchDate, teamA.name, teamB.name, teamA.players, "#BD3944");
   writeMatchBlock(sheetB, matchId, matchDate, teamB.name, teamA.name, teamB.players, "#009B8D");
 
+  // If round scores are provided, atomically update CONFIG sheet cumulative round records
+  var updatedRecords = [];
+  if (scoreA !== null && scoreB !== null) {
+    const configSheet = ss.getSheetByName("CONFIG");
+    if (configSheet) {
+      const recA = updateConfigRoundRecord(configSheet, teamA.name, scoreA, scoreB);
+      const recB = updateConfigRoundRecord(configSheet, teamB.name, scoreB, scoreA);
+      if (recA) updatedRecords.push(recA);
+      if (recB) updatedRecords.push(recB);
+    }
+  }
+
   return {
     success: true,
     matchId: matchId,
     updatedTeams: [teamA.name, teamB.name],
+    roundScore: scoreA !== null && scoreB !== null ? { teamA: scoreA, teamB: scoreB } : null,
+    updatedConfigRecords: updatedRecords,
     message: "Match " + matchId + " written to " + teamA.name + " and " + teamB.name,
   };
 }
